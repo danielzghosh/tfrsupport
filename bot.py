@@ -2,6 +2,7 @@ import os
 import logging
 import sqlite3
 import uuid
+import asyncio
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,12 +18,10 @@ from telegram.ext import (
 # ---------------- CONFIG ---------------- #
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
 QUERY_GROUP_ID = -5212355257
 PAYMENT_GROUP_ID = -4632730127
 TECH_GROUP_ID = -5129927362
 OTHER_GROUP_ID = -1003860208390
-
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 # ---------------------------------------- #
@@ -63,7 +62,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📦 Others", callback_data="others")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
         "Welcome to TFR Support.\n\nSelect a department:",
         reply_markup=reply_markup
@@ -72,9 +70,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def department_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     context.user_data["department"] = query.data
-
     await query.message.reply_text("Please describe your issue in detail.")
     return ASK_ISSUE
 
@@ -115,27 +111,20 @@ async def receive_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"User ID: {user_id}\n"
         f"Ticket ID: #{ticket_id}"
     )
-
     return ConversationHandler.END
 
 async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         return
-
     ticket_id = context.args[0]
     reply_text = " ".join(context.args[1:])
-
     cursor.execute("SELECT user_id, status FROM tickets WHERE ticket_id=?", (ticket_id,))
     result = cursor.fetchone()
-
     if not result:
         return
-
     user_id, status = result
-
     if status == "closed":
         return
-
     await context.bot.send_message(
         chat_id=user_id,
         text=f"📩 Support Reply (Ticket #{ticket_id}):\n\n{reply_text}"
@@ -144,29 +133,20 @@ async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
         return
-
     ticket_id = context.args[0]
-
     cursor.execute("SELECT user_id FROM tickets WHERE ticket_id=?", (ticket_id,))
     result = cursor.fetchone()
-
     if not result:
         return
-
     user_id = result[0]
-
-    cursor.execute(
-        "UPDATE tickets SET status='closed' WHERE ticket_id=?",
-        (ticket_id,)
-    )
+    cursor.execute("UPDATE tickets SET status='closed' WHERE ticket_id=?", (ticket_id,))
     conn.commit()
-
     await context.bot.send_message(
         chat_id=user_id,
         text=f"✅ Your ticket #{ticket_id} has been closed."
     )
 
-# ---------------- FLASK SERVER ---------------- #
+# ---------------- FLASK + TELEGRAM SETUP ---------------- #
 
 app = Flask(__name__)
 
@@ -185,6 +165,12 @@ telegram_app.add_handler(CallbackQueryHandler(department_selected))
 telegram_app.add_handler(CommandHandler("reply", reply_command))
 telegram_app.add_handler(CommandHandler("close", close_command))
 
+async def setup():
+    await telegram_app.initialize()
+    await telegram_app.start()
+
+asyncio.get_event_loop().run_until_complete(setup())
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
@@ -194,10 +180,3 @@ async def webhook():
 @app.route("/")
 def index():
     return "Bot is running!"
-
-if __name__ == "__main__":
-    telegram_app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
-    )
