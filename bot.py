@@ -105,46 +105,56 @@ async def receive_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        f"✅ Ticket Created\n\n"
-        f"A human admin from TFR_Support will contact you shortly.\n\n"
-        f"Verification Code:\n"
-        f"User ID: {user_id}\n"
-        f"Ticket ID: #{ticket_id}"
+        f"✅ Ticket Created!\n\n"
+        f"Your issue has been submitted to our support team.\n"
+        f"A human admin from TFR Support will contact you shortly.\n\n"
+        f"📋 Your Ticket Details:\n"
+        f"Ticket ID: #{ticket_id}\n"
+        f"User ID: {user_id}\n\n"
+        f"Please save these details to verify your identity with our admin."
     )
+
     return ConversationHandler.END
 
 async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
+        await update.message.reply_text("Usage: /reply <ticket_id> <message>")
         return
     ticket_id = context.args[0]
     reply_text = " ".join(context.args[1:])
     cursor.execute("SELECT user_id, status FROM tickets WHERE ticket_id=?", (ticket_id,))
     result = cursor.fetchone()
     if not result:
+        await update.message.reply_text("Ticket not found.")
         return
     user_id, status = result
     if status == "closed":
+        await update.message.reply_text("This ticket is already closed.")
         return
     await context.bot.send_message(
         chat_id=user_id,
         text=f"📩 Support Reply (Ticket #{ticket_id}):\n\n{reply_text}"
     )
+    await update.message.reply_text("✅ Reply sent.")
 
 async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
+        await update.message.reply_text("Usage: /close <ticket_id>")
         return
     ticket_id = context.args[0]
     cursor.execute("SELECT user_id FROM tickets WHERE ticket_id=?", (ticket_id,))
     result = cursor.fetchone()
     if not result:
+        await update.message.reply_text("Ticket not found.")
         return
     user_id = result[0]
     cursor.execute("UPDATE tickets SET status='closed' WHERE ticket_id=?", (ticket_id,))
     conn.commit()
     await context.bot.send_message(
         chat_id=user_id,
-        text=f"✅ Your ticket #{ticket_id} has been closed."
+        text=f"✅ Your ticket #{ticket_id} has been closed by our support team."
     )
+    await update.message.reply_text(f"✅ Ticket #{ticket_id} closed.")
 
 # ---------------- FLASK + TELEGRAM SETUP ---------------- #
 
@@ -157,7 +167,7 @@ conv_handler = ConversationHandler(
     states={
         ASK_ISSUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_issue)],
     },
-    fallbacks=[],
+    fallbacks=[CommandHandler("start", start)],
 )
 
 telegram_app.add_handler(conv_handler)
@@ -172,9 +182,14 @@ async def setup():
 asyncio.get_event_loop().run_until_complete(setup())
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    await telegram_app.process_update(update)
+def webhook():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        loop.run_until_complete(telegram_app.process_update(update))
+    finally:
+        loop.close()
     return "ok"
 
 @app.route("/")
