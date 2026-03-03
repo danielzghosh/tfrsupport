@@ -2,6 +2,8 @@ import os
 import logging
 import sqlite3
 import uuid
+import asyncio
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -9,8 +11,11 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
+    ConversationHandler,
     filters,
 )
+
+# ---------------- CONFIG ---------------- #
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
@@ -20,7 +25,11 @@ PAYMENT_GROUP_ID = -4632730127
 TECH_GROUP_ID = -5129927362
 OTHER_GROUP_ID = -1003860208390
 
+# ---------------------------------------- #
+
 logging.basicConfig(level=logging.INFO)
+
+ASK_ISSUE = 1
 
 # ---------------- DATABASE ---------------- #
 
@@ -44,7 +53,9 @@ DEPARTMENTS = {
     "others": OTHER_GROUP_ID,
 }
 
-user_state = {}
+# ---------------- BOT SETUP ---------------- #
+
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
 # ---------------- BOT LOGIC ---------------- #
 
@@ -55,31 +66,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🛠 Technical Support", callback_data="tech")],
         [InlineKeyboardButton("📦 Others", callback_data="others")],
     ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
         "Welcome to TFR Support.\n\nSelect a department:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=reply_markup
     )
 
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def department_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_state[query.from_user.id] = query.data
-
+    context.user_data["department"] = query.data
     await query.message.reply_text("Please describe your issue in detail.")
+    return ASK_ISSUE
 
 async def receive_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
+    department = context.user_data.get("department")
 
-    if user_id not in user_state:
+    if not department:
         await update.message.reply_text("Please type /start first.")
-        return
-
-    department = user_state[user_id]
-    group_id = DEPARTMENTS[department]
+        return ConversationHandler.END
 
     ticket_id = str(uuid.uuid4())[:8]
+    group_id = DEPARTMENTS[department]
 
     cursor.execute(
         "INSERT INTO tickets VALUES (?, ?, ?, ?)",
@@ -108,7 +119,7 @@ async def receive_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Ticket ID: #{ticket_id}"
     )
 
-    del user_state[user_id]
+    return ConversationHandler.END
 
 async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
@@ -124,7 +135,6 @@ async def reply_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id, status = result
-
     if status == "closed":
         return
 
@@ -158,19 +168,39 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"✅ Your ticket #{ticket_id} has been closed."
     )
 
-# ---------------- MAIN ---------------- #
+# ---------------- HANDLERS ---------------- #
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        ASK_ISSUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_issue)],
+    },
+    fallbacks=[],
+)
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(CommandHandler("reply", reply_command))
-app.add_handler(CommandHandler("close", close_command))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive_issue))
+telegram_app.add_handler(conv_handler)
+telegram_app.add_handler(CallbackQueryHandler(department_selected))
+telegram_app.add_handler(CommandHandler("reply", reply_command))
+telegram_app.add_handler(CommandHandler("close", close_command))
 
-if __name__ == "__main__":
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=WEBHOOK_URL,
-    )
+# ---------------- FLASK APP ---------------- #
+
+app = Flask(__name__)
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    await telegram_app.process_update(update)
+    return "ok"
+
+@app.route("/")
+def index():
+    return "Bot is running!"
+
+# ---------------- WEBHOOK INIT ---------------- #
+
+async def init_bot():
+    await telegram_app.initialize()
+    await telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+asyncio.get_event_loop().run_until_complete(init_bot())
