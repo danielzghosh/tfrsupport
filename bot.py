@@ -16,17 +16,19 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-# ====== GROUP IDS ======
+# ===== GROUP IDS =====
 PAYMENTS_GROUP = -1003728874791
 QUERIES_GROUP = -1003783846840
 OTHERS_GROUP = -1003860208390
 TECH_GROUP = -1003747387460
-# =======================
+# =====================
 
 app = Flask(__name__)
 application = Application.builder().token(BOT_TOKEN).build()
 
-# -------- START COMMAND --------
+
+# ---------- HANDLERS ----------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Payments", callback_data="payments")],
@@ -42,18 +44,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# -------- DEPARTMENT SELECTED --------
+
 async def department_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     context.user_data["department"] = query.data
 
-    await query.message.reply_text(
-        "Please describe your issue:"
-    )
+    await query.message.reply_text("Please describe your issue:")
 
-# -------- MESSAGE HANDLER --------
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "department" not in context.user_data:
         return
@@ -91,22 +91,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
 
-# -------- ADD HANDLERS --------
+
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(department_selected))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# -------- WEBHOOK ROUTE --------
+
+# ---------- WEBHOOK ROUTE ----------
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
     await application.process_update(update)
     return "ok"
 
-# -------- START --------
-if __name__ == "__main__":
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
-    )
+
+# ---------- SET WEBHOOK ON STARTUP ----------
+
+@app.before_first_request
+async def setup():
+    await application.initialize()
+    await application.start()
+    await application.bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
